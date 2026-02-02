@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model detail_transaksi {
+  id_detail_transaksi Int @id @default(autoincrement())
+  harga               Int
+  qty                 Int
+  id_menu             Int
+  id_transaksi        Int
+
+  @@index([id_menu], map: "Detail_transaksi_id_menu_fkey")
+  @@index([id_transaksi], map: "Detail_transaksi_id_transaksi_fkey")
+}
+
+model diskon {
+  id_diskon         Int      @id @default(autoincrement())
+  nama_diskon       String
+  persentase_diskon Int
+  tgl_awal          DateTime
+  tgl_akhir         DateTime
+}
+
+model menu {
+  id_menu      Int        @id @default(autoincrement())
+  nama_makanan String
+  jenis        menu_jenis
+  deskripsi    String
+  gambar       String
+  harga        Int
+}
+
+model menu_diskon {
+  id_menu_diskon Int @id @default(autoincrement())
+  id_menu        Int
+  id_diskon      Int
+
+  @@index([id_diskon], map: "Menu_diskon_id_diskon_fkey")
+  @@index([id_menu], map: "Menu_diskon_id_menu_fkey")
+}
+
+model siswa {
+  id_siswa   Int    @id @default(autoincrement())
+  nama_siswa String
+  alamat     String
+  telp       Int
+  foto       String
+  id_user    Int    @unique(map: "Siswa_id_user_key")
+}
+
+model stan {
+  id_stan      Int    @id @default(autoincrement())
+  nama_stan    String
+  nama_pemilik String
+  telp         String @db.VarChar(20)
+  id_user      Int    @unique(map: "Stan_id_user_key")
+}
+
+model transaksi {
+  id_transaksi   Int      @id @default(autoincrement())
+  tgl_transaksi  DateTime
+  nama_pelanggan String
+  status         Boolean
+  id_user        Int
+  id_stan        Int
+
+  @@index([id_stan], map: "Transaksi_id_stan_fkey")
+  @@index([id_user], map: "Transaksi_id_user_fkey")
+}
+
+model user {
+  id_user   Int       @id @default(autoincrement())
+  username  String    @unique(map: "User_username_key")
+  password  String
+  role      user_role
+  name_user String
+}
+
+enum menu_jenis {
+  makanan
+  minuman
+}
+
+enum user_role {
+  admin_stan
+  siswa
+}
