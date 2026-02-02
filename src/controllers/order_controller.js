@@ -1,0 +1,524 @@
+import { PrismaClient, TransaksiStatus } from "@prisma/client";
+
+const prisma = new PrismaClient();
+
+/* ================= CREATE PESAN ================= */
+export const createPesan = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const { id_stan, pesan } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    if (!id_stan || !Array.isArray(pesan) || pesan.length === 0) {
+      return res.status(400).json({
+        message: "Format pesanan tidak valid (hanya 1 stan)",
+      });
+    }
+
+    const siswa = await prisma.siswa.findUnique({
+      where: { userId },
+    });
+
+    if (!siswa) {
+      return res.status(404).json({ message: "Siswa tidak ditemukan" });
+    }
+
+    const detailData = [];
+
+    for (const item of pesan) {
+      const menu = await prisma.menu.findFirst({
+        where: {
+          id: Number(item.id_menu),
+          stanId: Number(id_stan),
+        },
+        include: {
+          menuDiskon: {
+            include: { diskon: true },
+          },
+        },
+      });
+
+      if (!menu) {
+        return res.status(404).json({
+          message: `Menu ${item.id_menu} tidak ditemukan di stan ${id_stan}`,
+        });
+      }
+
+      const diskon = menu.menuDiskon[0]?.diskon;
+      const persenDiskon = diskon?.persenDiskon ?? 0;
+
+      const hargaAwal = menu.harga;
+      const hargaFinal = hargaAwal - hargaAwal * (persenDiskon / 100);
+
+      detailData.push({
+        menuId: menu.id,
+        qty: Number(item.qty),
+        hargaBeli: Math.round(hargaFinal),
+      });
+    }
+
+    const transaksi = await prisma.transaksi.create({
+      data: {
+        stanId: Number(id_stan),
+        siswaId: siswa.id,
+        detail: {
+          create: detailData,
+        },
+      },
+      include: {
+        detail: {
+          include: {
+            menu: {
+              select: {
+                id: true,
+                namaMakanan: true,
+              },
+            },
+          },
+        },
+        stan: {
+          select: {
+            id: true,
+            namaStan: true,
+          },
+        },
+      },
+    });
+
+    res.status(201).json({
+      message: "Pesanan berhasil dibuat",
+      data: transaksi,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/* ================= SISWA ================= */
+export const getOrderByStatusSiswa = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const statusParam = req.params.status;
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const siswa = await prisma.siswa.findUnique({
+      where: { userId },
+    });
+
+    if (!siswa) {
+      return res.status(403).json({ message: "Akses ditolak (bukan siswa)" });
+    }
+
+    const whereCondition = { siswaId: siswa.id };
+    if (statusParam) whereCondition.status = statusParam;
+
+    const orders = await prisma.transaksi.findMany({
+      where: whereCondition,
+      orderBy: { createdAt: "desc" },
+      include: {
+        stan: { select: { id: true, namaStan: true } },
+        detail: {
+          include: {
+            menu: { select: { namaMakanan: true, harga: true } },
+          },
+        },
+      },
+    });
+
+    res.status(200).json({
+      message: "Berhasil mengambil data pesanan siswa",
+      data: orders,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json(error);
+  }
+};
+
+export const getOrderHistoryByMonthSiswa = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const bulan = Number(req.params.bulan);
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    if (isNaN(bulan) || bulan < 1 || bulan > 12) {
+      return res.status(400).json({ message: "Bulan tidak valid (1-12)" });
+    }
+
+    const siswa = await prisma.siswa.findUnique({
+      where: { userId },
+    });
+
+    if (!siswa) {
+      return res.status(403).json({ message: "Akses ditolak (bukan siswa)" });
+    }
+
+    const year = new Date().getFullYear();
+    const startDate = new Date(year, bulan - 1, 1);
+    const endDate = new Date(year, bulan, 0, 23, 59, 59);
+
+    const orders = await prisma.transaksi.findMany({
+      where: {
+        siswaId: siswa.id,
+        createdAt: { gte: startDate, lte: endDate },
+      },
+      orderBy: { createdAt: "desc" },
+      include: {
+        stan: { select: { id: true, namaStan: true } },
+        detail: {
+          include: {
+            menu: { select: { namaMakanan: true, harga: true } },
+          },
+        },
+      },
+    });
+
+    res.status(200).json({
+      message: `Histori pesanan bulan ${bulan}`,
+      data: orders,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json(error);
+  }
+};
+
+/* ================= CETAK NOTA ================= */
+export const cetakNotaByOrderId = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const orderId = Number(req.params.id);
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const transaksi = await prisma.transaksi.findUnique({
+      where: { id: orderId },
+      include: {
+        stan: { select: { id: true, namaStan: true, userId: true } },
+        siswa: { select: { id: true, namaSiswa: true, userId: true } },
+        detail: {
+          include: { menu: { select: { namaMakanan: true } } },
+        },
+      },
+    });
+
+    if (!transaksi) {
+      return res.status(404).json({ message: "Transaksi tidak ditemukan" });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        role: true,
+        siswa: { select: { id: true } },
+        stan: { select: { id: true } },
+      },
+    });
+
+    const isSiswaOwner =
+      user?.role === "SISWA" && user.siswa?.id === transaksi.siswa.id;
+
+    const isStanOwner =
+      user?.role === "ADMIN_STAN" && user.stan?.id === transaksi.stan.id;
+
+    if (!isSiswaOwner && !isStanOwner) {
+      return res.status(403).json({
+        message: "Anda tidak memiliki akses ke nota ini",
+      });
+    }
+
+    const items = transaksi.detail.map((d) => ({
+      namaMenu: d.menu.namaMakanan,
+      qty: d.qty,
+      hargaSatuan: d.hargaBeli,
+      subtotal: d.qty * d.hargaBeli,
+    }));
+
+    const totalHarga = items.reduce((sum, i) => sum + i.subtotal, 0);
+
+    res.status(200).json({
+      message: "Berhasil mencetak nota",
+      data: {
+        namaStan: transaksi.stan.namaStan,
+        namaSiswa: transaksi.siswa.namaSiswa,
+        tanggalOrder: transaksi.createdAt,
+        items,
+        totalHarga,
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json(error);
+  }
+};
+
+/* ================= ADMIN STAN ================= */
+export const updateOrderStatusByStan = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const transaksiId = Number(req.params.id);
+    const { status } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    if (!Object.values(TransaksiStatus).includes(status)) {
+      return res.status(400).json({ message: "Status transaksi tidak valid" });
+    }
+
+    const stan = await prisma.stan.findUnique({
+      where: { userId },
+    });
+
+    if (!stan) {
+      return res.status(403).json({ message: "Akses ditolak (bukan admin stan)" });
+    }
+
+    const transaksi = await prisma.transaksi.findUnique({
+      where: { id: transaksiId },
+    });
+
+    if (!transaksi || transaksi.stanId !== stan.id) {
+      return res.status(403).json({
+        message: "Anda tidak berhak mengubah status pesanan ini",
+      });
+    }
+
+    const updated = await prisma.transaksi.update({
+      where: { id: transaksiId },
+      data: { status },
+    });
+
+    res.status(200).json({
+      message: "Status pesanan berhasil diperbarui",
+      data: updated,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json(error);
+  }
+};
+/* ================= GET ORDER BY STATUS (STAN) ================= */
+export const getOrderByStatusStan = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const statusParam = req.params.status; // string | undefined
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    // Cari stan dari user
+    const stan = await prisma.stan.findUnique({
+      where: { userId },
+    });
+
+    if (!stan) {
+      return res.status(403).json({
+        message: "Akses ditolak (bukan admin stan)",
+      });
+    }
+
+    const whereCondition = {
+      stanId: stan.id,
+    };
+
+    if (statusParam) {
+      whereCondition.status = statusParam;
+    }
+
+    const orders = await prisma.transaksi.findMany({
+      where: whereCondition,
+      orderBy: { createdAt: "desc" },
+      include: {
+        siswa: {
+          select: {
+            id: true,
+            namaSiswa: true,
+          },
+        },
+        detail: {
+          include: {
+            menu: {
+              select: {
+                namaMakanan: true,
+                harga: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    res.status(200).json({
+      message: "Berhasil mengambil data pesanan",
+      data: orders,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/* ================= PEMASUKAN BULANAN & MENU TERLARIS ================= */
+export const getMonthlyIncomeAndTopMenu = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const bulan = Number(req.params.bulan); // 1 - 12
+    const tahun = Number(req.query.tahun) || new Date().getFullYear();
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    if (bulan < 1 || bulan > 12) {
+      return res.status(400).json({
+        message: "Bulan tidak valid (1-12)",
+      });
+    }
+
+    // Cari stan
+    const stan = await prisma.stan.findUnique({
+      where: { userId },
+    });
+
+    if (!stan) {
+      return res.status(403).json({
+        message: "Akses ditolak (bukan admin stan)",
+      });
+    }
+
+    const startDate = new Date(tahun, bulan - 1, 1);
+    const endDate = new Date(tahun, bulan, 0, 23, 59, 59);
+
+    const transaksi = await prisma.detailTransaksi.findMany({
+      where: {
+        transaksi: {
+          stanId: stan.id,
+          createdAt: {
+            gte: startDate,
+            lte: endDate,
+          },
+        },
+      },
+      include: {
+        menu: {
+          select: {
+            id: true,
+            namaMakanan: true,
+          },
+        },
+      },
+    });
+
+    let totalPemasukan = 0;
+    const menuCounter = {};
+
+    transaksi.forEach((item) => {
+      totalPemasukan += item.qty * item.hargaBeli;
+
+      if (!menuCounter[item.menuId]) {
+        menuCounter[item.menuId] = {
+          nama: item.menu.namaMakanan,
+          qty: 0,
+        };
+      }
+
+      menuCounter[item.menuId].qty += item.qty;
+    });
+
+    const menuTerlaris =
+      Object.values(menuCounter).sort((a, b) => b.qty - a.qty)[0] || null;
+
+    res.status(200).json({
+      message: `Laporan pemasukan bulan ${bulan}-${tahun}`,
+      data: {
+        bulan,
+        tahun,
+        totalPemasukan,
+        menuTerlaris,
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/* ================= HISTORI ORDER PER BULAN (STAN) ================= */
+export const getOrderHistoryByMonth = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const bulan = Number(req.params.bulan);
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    if (bulan < 1 || bulan > 12) {
+      return res.status(400).json({
+        message: "Bulan tidak valid (1-12)",
+      });
+    }
+
+    const stan = await prisma.stan.findUnique({
+      where: { userId },
+    });
+
+    if (!stan) {
+      return res.status(403).json({ message: "Akses ditolak" });
+    }
+
+    const year = new Date().getFullYear();
+    const startDate = new Date(year, bulan - 1, 1);
+    const endDate = new Date(year, bulan, 0, 23, 59, 59);
+
+    const orders = await prisma.transaksi.findMany({
+      where: {
+        stanId: stan.id,
+        createdAt: {
+          gte: startDate,
+          lte: endDate,
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      include: {
+        siswa: {
+          select: {
+            namaSiswa: true,
+          },
+        },
+        detail: {
+          include: {
+            menu: {
+              select: {
+                namaMakanan: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    res.status(200).json({
+      message: `Histori pesanan bulan ${bulan}`,
+      data: orders,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
